@@ -1,0 +1,32 @@
+# microservices-frontend-service (this repo).
+# Builds the image from this directory and joins the SHARED external network so
+# it can reach the auth-service and payment-service containers (which live in
+# their own separate repos / compose projects) by name.
+#
+# One-time, before the first `up` (shared by all three repos):
+#   docker network create microservices-net
+#
+# Then from this folder:
+#   docker-compose up -d --build
+# Open http://localhost:8088
+
+services:
+  frontend:
+    build: .
+    image: microservices-frontend-service:local
+    container_name: frontend
+    ports:
+      # Host 8088 -> container 8080 (host 8080 is used by another container).
+      - "8088:8080"
+    environment:
+      PORT: "8080"
+      # Point at the other services by their container names on the shared network.
+      BACKEND_AUTH_URL: http://auth-service:3000
+      BACKEND_PAYMENT_URL: http://payment-service:5000
+    networks:
+      - microservices-net
+    restart: unless-stopped
+
+networks:
+  microservices-net:
+    external: true
