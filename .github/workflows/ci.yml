@@ -123,7 +123,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Use the open-source gitleaks CLI directly. The gitleaks GitHub Action
+      # requires a paid GITLEAKS_LICENSE for org-owned repos; the CLI (MIT) does
+      # not. Scans full git history and fails the job on any finding.
+      - name: Gitleaks (open-source CLI, no license required)
+        run: |
+          docker run --rm -v "${GITHUB_WORKSPACE}:/repo" \
+            ghcr.io/gitleaks/gitleaks:latest \
+            detect --source=/repo --redact --verbose --exit-code=1
