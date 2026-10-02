@@ -1,22 +1,28 @@
-# Small, production-ish image for the Node/Express frontend.
-FROM node:20-alpine
+# syntax=docker/dockerfile:1
 
-# Create app directory
+# ---- Build stage: compile the React + Vite app into static assets ----
+FROM node:20-alpine AS build
 WORKDIR /app
 
-# Install dependencies first (better layer caching)
-COPY package.json ./
-RUN npm install --omit=dev
+# Install dependencies first for better layer caching.
+COPY package.json package-lock.json ./
+RUN npm ci
 
-# Copy the rest of the app
-COPY server.js ./
-COPY public ./public
+# Build the production bundle.
+COPY . .
+RUN npm run build
 
-# The app listens on 8080 (see server.js / PORT env)
-ENV PORT=8080
+# ---- Runtime stage: serve the static bundle with nginx ----
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+
+# Unprivileged nginx runs as uid 101 ("nginx") and can bind :8080 (not :80).
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+
 EXPOSE 8080
 
-# Run as the built-in non-root "node" user for safety
-USER node
+# Image already drops to the non-root "nginx" user.
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
 
-CMD ["node", "server.js"]
+CMD ["nginx", "-g", "daemon off;"]

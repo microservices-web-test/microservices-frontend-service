@@ -1,4 +1,20 @@
+# dependencies
 node_modules/
-npm-debug.log
+npm-debug.log*
+
+# build output
+dist/
+coverage/
+
+# local env
 .env
+.env.*
+!.env.example
+
+# editors / OS
 .idea/
+.vscode/
+.DS_Store
+
+# vite / ts caches
+*.tsbuildinfo
