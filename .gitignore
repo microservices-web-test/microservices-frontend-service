@@ -18,3 +18,5 @@ coverage/
 
 # vite / ts caches
 *.tsbuildinfo
+
+DEPLOYMENT-JOURNEY.md
