@@ -24,13 +24,10 @@ spec:
         app.kubernetes.io/name: frontend
         app.kubernetes.io/part-of: microservices-demo
     spec:
-      # Credentials to pull from the private OCIR registry (created out-of-band,
-      # see k8s/README.md -> "Create the OCIR pull secret").
       imagePullSecrets:
         - name: ocir-secret
       containers:
         - name: frontend
-          # lhr.ocir.io/<namespace>/microservices-frontend:<tag>
           image: lhr.ocir.io/lryjhgnewmyj/microservices-frontend:v1
           imagePullPolicy: IfNotPresent
           ports:

@@ -7,8 +7,6 @@ internal Docker/Kubernetes network, to the `auth-service` and `payment-service`
 (which live in their own separate repositories).
 
 This is a standalone repository containing **only** the frontend application.
-Infrastructure (Terraform, Kubernetes manifests, OCI config) lives in a separate
-`microservices-infra` directory.
 
 ## Contents
 

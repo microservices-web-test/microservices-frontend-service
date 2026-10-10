@@ -14,6 +14,6 @@ spec:
   ports:
     - name: http
       port: 80
-      targetPort: http      # container port 8080
-      nodePort: 30080       # reachable at http://<node-public-ip>:30080
+      targetPort: http
+      nodePort: 30080
 

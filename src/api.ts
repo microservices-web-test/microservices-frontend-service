@@ -21,8 +21,6 @@ export function isBackendError(
   return "error" in data && Boolean(data.error);
 }
 
-// The ingress/gateway routes /api/auth and /api/payment to the backend
-// services. In local dev, Vite's proxy (see vite.config.ts) forwards them.
 export async function callBackend(
   service: ServiceName,
 ): Promise<BackendResponse> {
@@ -33,7 +31,6 @@ export async function callBackend(
     return (await res.json()) as BackendResponse;
   }
 
-  // Fallback for non-JSON responses (e.g. a plain-text backend reply).
   const text = await res.text();
   if (res.ok) {
     return {
