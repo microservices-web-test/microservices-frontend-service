@@ -1,24 +1,3 @@
-// CI/CD pipeline for microservices-frontend-service.
-//
-// Target:  self-managed k3s cluster on OCI (2x arm64 VMs, UK London).
-// Agent:   Jenkins runs ON node1 (arm64) -> `docker build` produces arm64 images
-//          natively (no emulation needed).
-// Flow:    checkout -> build image -> push to OCIR -> deploy to k3s (rolling update).
-//
-// Trigger: manual "Build Now" for now. To auto-build on master, uncomment the
-//          pollSCM trigger below (works behind NAT), or wire a GitHub webhook
-//          once Jenkins is reachable from the internet.
-//
-// Required Jenkins credentials (Manage Jenkins > Credentials > System > Global):
-//   - ocir-credentials : "Username with password".
-//                        Username = lryjhgnewmyj/nadulsrinee@gmail.com
-//                        Password = OCIR auth token
-//                          (cd ~/microservices-infra/oci-uk && terraform output -raw ocir_auth_token)
-//   - kubeconfig       : "Secret file" = ~/microservices-infra/oci-uk/kubeconfig
-//
-// The pipeline is self-contained: it also creates/refreshes the private-registry
-// pull secret (ocir-secret) and the namespace, so no manual kubectl bootstrap is
-// required.
 pipeline {
   agent any
   options {
@@ -27,15 +6,22 @@ pipeline {
     timeout(time: 30, unit: 'MINUTES')
     buildDiscarder(logRotator(numToKeepStr: '20'))
   }
-  // triggers {
-  //   // Auto-build on new commits to the tracked branch (Jenkins polls GitHub).
-  //   pollSCM('H/5 * * * *')
-  // }
+
+  triggers {
+    // Auto-build when GitHub sends a push webhook to Jenkins.
+    // One-time setup in the repo: Settings -> Webhooks -> Add webhook
+    //   Payload URL : http://141.147.71.111:8080/github-webhook/
+    //   Content type: application/json
+    //   Events      : Just the push event
+    githubPush()
+    // Fallback if you ever can't use a webhook (Jenkins polls every 5 min):
+    // pollSCM('H/5 * * * *')
+  }
   environment {
-    // ---- OCIR (Oracle Cloud Infrastructure Registry) ----
-    OCIR_REGISTRY  = 'lhr.ocir.io'                 // uk-london-1 -> lhr
-    OCI_TENANCY_NS = 'lryjhgnewmyj'                // object-storage namespace
-    IMAGE_REPO     = 'microservices-frontend'      // private repo created by terraform
+
+    OCIR_REGISTRY  = 'lhr.ocir.io'
+    OCI_TENANCY_NS = 'lryjhgnewmyj'
+    IMAGE_REPO     = 'microservices-frontend'
     IMAGE_NAME     = "${OCIR_REGISTRY}/${OCI_TENANCY_NS}/${IMAGE_REPO}"
     // ---- k3s target ----
     K8S_NAMESPACE  = 'microservices'
@@ -65,10 +51,18 @@ pipeline {
         '''
       }
     }
+
+    stage('Test') {
+      steps {
+        sh '''
+          set -eu
+          docker build --target build -t "${IMAGE_NAME}:test-${IMAGE_TAG}" .
+          docker run --rm "${IMAGE_NAME}:test-${IMAGE_TAG}" npm run test
+        '''
+      }
+    }
     stage('Scan image (Trivy, optional)') {
       steps {
-        // Non-blocking by default. Install trivy on the agent and drop `|| true`
-        // to gate deploys on HIGH/CRITICAL CVEs.
         sh '''
           set -eu
           if command -v trivy >/dev/null 2>&1; then
@@ -139,8 +133,7 @@ pipeline {
       echo "Deployed ${IMAGE_NAME}:${IMAGE_TAG} to k3s namespace ${K8S_NAMESPACE} (NodePort 30080)."
     }
     always {
-      // Keep the agent's disk clean.
-      sh 'docker image rm "${IMAGE_NAME}:${IMAGE_TAG}" "${IMAGE_NAME}:latest" >/dev/null 2>&1 || true'
+      sh 'docker image rm "${IMAGE_NAME}:${IMAGE_TAG}" "${IMAGE_NAME}:latest" "${IMAGE_NAME}:test-${IMAGE_TAG}" >/dev/null 2>&1 || true'
     }
   }
 }
