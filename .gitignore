@@ -20,3 +20,5 @@ coverage/
 *.tsbuildinfo
 
 DEPLOYMENT-JOURNEY.md
+
+ssh_key
