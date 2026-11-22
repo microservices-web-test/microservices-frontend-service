@@ -1,3 +1,6 @@
+// CI only: test -> build -> push to Docker Hub -> bump image tag in the GitOps config repo.
+// Deployment is done by Argo CD, which watches microservices-app-config (apps/microservices-frontend-service).
+// Jenkins holds NO cluster credentials (no kubeconfig).
 pipeline {
   agent any
   options {
@@ -6,28 +9,17 @@ pipeline {
     timeout(time: 30, unit: 'MINUTES')
     buildDiscarder(logRotator(numToKeepStr: '20'))
   }
-
   triggers {
-    // Auto-build when GitHub sends a push webhook to Jenkins.
-    // One-time setup in the repo: Settings -> Webhooks -> Add webhook
-    //   Payload URL : http://141.147.71.111:8080/github-webhook/
-    //   Content type: application/json
-    //   Events      : Just the push event
     githubPush()
-    // Fallback if you ever can't use a webhook (Jenkins polls every 5 min):
-    // pollSCM('H/5 * * * *')
   }
   environment {
-
-    OCIR_REGISTRY  = 'lhr.ocir.io'
-    OCI_TENANCY_NS = 'lryjhgnewmyj'
-    IMAGE_REPO     = 'microservices-frontend'
-    IMAGE_NAME     = "${OCIR_REGISTRY}/${OCI_TENANCY_NS}/${IMAGE_REPO}"
-    // ---- k3s target ----
-    K8S_NAMESPACE  = 'microservices'
-    K8S_DEPLOYMENT = 'frontend'
-    K8S_CONTAINER  = 'frontend'
-    PULL_SECRET    = 'ocir-secret'
+    DOCKERHUB_NS   = 'nandul2424'
+    IMAGE_REPO     = 'microservices-frontend-service'
+    IMAGE_NAME     = "${DOCKERHUB_NS}/${IMAGE_REPO}"
+    // ---- GitOps config repo ----
+    CONFIG_REPO    = 'git@github.com:microservices-web-test/microservices-app-config.git'
+    CONFIG_BRANCH  = 'main'
+    CONFIG_DIR     = 'apps/microservices-frontend-service'
   }
   stages {
     stage('Checkout') {
@@ -40,6 +32,16 @@ pipeline {
         }
       }
     }
+    stage('Test') {
+      steps {
+        sh '''
+          set -eu
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD":/app -w /app node:20-alpine \
+            sh -c "npm ci && npm test"
+        '''
+      }
+    }
     stage('Build image (arm64)') {
       steps {
         sh '''
@@ -48,16 +50,6 @@ pipeline {
             -t "${IMAGE_NAME}:${IMAGE_TAG}" \
             -t "${IMAGE_NAME}:latest" \
             .
-        '''
-      }
-    }
-
-    stage('Test') {
-      steps {
-        sh '''
-          set -eu
-          docker build --target build -t "${IMAGE_NAME}:test-${IMAGE_TAG}" .
-          docker run --rm "${IMAGE_NAME}:test-${IMAGE_TAG}" npm run test
         '''
       }
     }
@@ -73,56 +65,49 @@ pipeline {
         '''
       }
     }
-    stage('Push to OCIR') {
+    stage('Push to Docker Hub') {
       steps {
         withCredentials([usernamePassword(
-          credentialsId: 'ocir-credentials',
-          usernameVariable: 'OCIR_USER',
-          passwordVariable: 'OCIR_TOKEN')]) {
+          credentialsId: 'dockerhub-credentials',
+          usernameVariable: 'DH_USER',
+          passwordVariable: 'DH_TOKEN')]) {
           sh '''
             set -eu
-            echo "${OCIR_TOKEN}" | docker login "${OCIR_REGISTRY}" -u "${OCIR_USER}" --password-stdin
+            echo "${DH_TOKEN}" | docker login -u "${DH_USER}" --password-stdin
             docker push "${IMAGE_NAME}:${IMAGE_TAG}"
             docker push "${IMAGE_NAME}:latest"
-            docker logout "${OCIR_REGISTRY}" || true
+            docker logout || true
           '''
         }
       }
     }
-    stage('Deploy to k3s') {
+    stage('Update GitOps config repo') {
       steps {
-        withCredentials([
-          file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE'),
-          usernamePassword(credentialsId: 'ocir-credentials',
-                           usernameVariable: 'OCIR_USER',
-                           passwordVariable: 'OCIR_TOKEN')]) {
+        withCredentials([sshUserPrivateKey(
+          credentialsId: 'config-repo-ssh',
+          keyFileVariable: 'CONFIG_SSH_KEY')]) {
           sh '''
             set -eu
-            export KUBECONFIG="${KUBECONFIG_FILE}"
-            # 1. Namespace.
-            kubectl apply -f k8s/namespace.yaml
-            # 2. Private-registry pull secret (idempotent create-or-update).
-            kubectl -n "${K8S_NAMESPACE}" create secret docker-registry "${PULL_SECRET}" \
-              --docker-server="${OCIR_REGISTRY}" \
-              --docker-username="${OCIR_USER}" \
-              --docker-password="${OCIR_TOKEN}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            # 3. Service (NodePort 30080).
-            kubectl apply -f k8s/service.yaml
-            # 4. Deployment with the freshly built, immutable tag substituted in.
-            sed "s#${IMAGE_NAME}:v1#${IMAGE_NAME}:${IMAGE_TAG}#g" k8s/deployment.yaml \
-              | kubectl apply -f -
-            # 5. Ensure the rollout targets the exact tag (covers re-runs).
-            kubectl -n "${K8S_NAMESPACE}" set image \
-              "deployment/${K8S_DEPLOYMENT}" \
-              "${K8S_CONTAINER}=${IMAGE_NAME}:${IMAGE_TAG}"
-            # 6. Wait for rollout; auto-rollback on failure.
-            if ! kubectl -n "${K8S_NAMESPACE}" rollout status \
-                 "deployment/${K8S_DEPLOYMENT}" --timeout=180s; then
-              echo "Rollout failed; rolling back."
-              kubectl -n "${K8S_NAMESPACE}" rollout undo "deployment/${K8S_DEPLOYMENT}"
-              exit 1
+            export GIT_SSH_COMMAND="ssh -i ${CONFIG_SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+            rm -rf .config-repo
+            git clone --depth 1 --branch "${CONFIG_BRANCH}" "${CONFIG_REPO}" .config-repo
+            cd .config-repo
+            git config user.name  "jenkins-ci"
+            git config user.email "jenkins-ci@users.noreply.github.com"
+            K="${CONFIG_DIR}/kustomization.yaml"
+            # point the manifests at the new immutable image tag
+            sed -i -E "s/^([[:space:]]*newTag:).*/\\1 ${IMAGE_TAG}/" "$K"
+            git add -A "${CONFIG_DIR}"
+            if git diff --cached --quiet; then
+              echo "No config changes to commit."
+              exit 0
             fi
+            git commit -m "microservices-frontend-service: deploy ${IMAGE_TAG} [skip ci]"
+            # retry if another service's pipeline pushed meanwhile
+            for i in 1 2 3; do
+              git push origin "HEAD:${CONFIG_BRANCH}" && break
+              git pull --rebase origin "${CONFIG_BRANCH}"
+            done
           '''
         }
       }
@@ -130,10 +115,10 @@ pipeline {
   }
   post {
     success {
-      echo "Deployed ${IMAGE_NAME}:${IMAGE_TAG} to k3s namespace ${K8S_NAMESPACE} (NodePort 30080)."
+      echo "Pushed ${IMAGE_NAME}:${IMAGE_TAG} and updated the config repo. Argo CD will deploy it."
     }
     always {
-      sh 'docker image rm "${IMAGE_NAME}:${IMAGE_TAG}" "${IMAGE_NAME}:latest" "${IMAGE_NAME}:test-${IMAGE_TAG}" >/dev/null 2>&1 || true'
+      sh 'rm -rf .config-repo; docker image rm "${IMAGE_NAME}:${IMAGE_TAG}" "${IMAGE_NAME}:latest" >/dev/null 2>&1 || true'
     }
   }
 }
