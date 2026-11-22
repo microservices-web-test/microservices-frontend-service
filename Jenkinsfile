@@ -88,7 +88,7 @@ pipeline {
           keyFileVariable: 'CONFIG_SSH_KEY')]) {
           sh '''
             set -eu
-            export GIT_SSH_COMMAND="ssh -i ${CONFIG_SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+            export GIT_SSH_COMMAND="ssh -i '${CONFIG_SSH_KEY}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
             rm -rf .config-repo
             git clone --depth 1 --branch "${CONFIG_BRANCH}" "${CONFIG_REPO}" .config-repo
             cd .config-repo
